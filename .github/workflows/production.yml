@@ -127,7 +127,8 @@ jobs:
       # 说明：if 里不要用 inputs.* / secrets.* 上下文（GitHub 在解析期就可能因上下文不可用判为无效工作流），
       # 需要开关时用环境变量或 vars。
       - name: 部署后健康检查
-        if: always() && needs.build.result == 'success'
+        # success() = 前面所有步骤都成功，避免部署已失败时还去健康检查刷噪音
+        if: success()
         run: |
           url="${{ steps.deployment.outputs.page_url || vars.HEALTH_URL }}"
           if [ -z "$url" ]; then

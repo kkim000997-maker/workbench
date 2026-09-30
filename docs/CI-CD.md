@@ -60,6 +60,7 @@ push main ─────▶ production.yml：门禁 → 构建 → 冒烟 → �
 | 类型 | 名称 | 说明 |
 | --- | --- | --- |
 | Secret | `NOTIFY_WEBHOOK` | 可选，部署失败时推送（企微/飞书/Slack 机器人地址） |
+| Variable | `NOTIFY_ENABLED` | 可选，填 `true` 才会发失败通知（**if 条件里不能引用 secrets**，所以用变量做开关） |
 
 > `pages` 模式**不需要任何 Secret**：GitHub Pages 用 OIDC（`id-token: write`）自动换取部署令牌。
 > 仓库级（Settings → Secrets and variables → Actions）当前**无需配置任何值**。
