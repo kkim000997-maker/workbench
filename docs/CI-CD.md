@@ -87,7 +87,82 @@ push main ─────▶ production.yml：门禁 → 构建 → 冒烟 → �
 | 8 | develop / main 并行推送 | 部署互相踩踏 | 两条 workflow 各自 `concurrency`，`cancel-in-progress: false`（部署不可中断） |
 | 9 | 页面里 36 处 `alert()` 弹窗、第三方 API 无服务端代理 | 体验与可用性依赖第三方配额 | 后续可加服务端代理层，把 API Key 移到服务端；当前为纯前端形态，CI 不做额外约束 |
 
-## 六、本地等价命令
+## 六、GitHub 首次配置 Checklist（全部在网页端人工完成）
+
+> 按顺序做。仓库里不存任何密钥，下面的 Secrets 只在 GitHub 上填。
+
+### 步骤 0 · 建仓库并推分支（本地命令行）
+
+```bash
+git remote add origin https://github.com/<你的账号>/<仓库名>.git
+git push -u origin main
+git push -u origin develop
+```
+GitHub 网页端新建仓库时**不要**勾选 README / .gitignore / license（保持空仓库）。
+
+### 步骤 1 · Settings → Environments → New environment
+
+建两个环境：**`staging`**、**`production`**。
+
+**`staging`**
+
+| 位置 | 名称 | 填什么 |
+| --- | --- | --- |
+| Secrets | `SSH_HOST` | staging 服务器域名或 IP |
+| Secrets | `SSH_USER` | SSH 登录用户 |
+| Secrets | `SSH_KEY` | ed25519 **私钥全文**（含 BEGIN/END 行） |
+| Variables | `DEPLOY_TARGET` | `rsync`（推荐） |
+| Variables | `DEPLOY_PATH` | 如 `/var/www/staging` |
+| Variables | `HEALTH_URL` | 如 `https://staging.example.com` |
+| Variables | `SSH_PORT` | 可选，默认 22 |
+
+**`production`**
+
+| 位置 | 名称 | 填什么 |
+| --- | --- | --- |
+| Secrets | `SSH_HOST` / `SSH_USER` / `SSH_KEY` | 同左（rsync 模式才需要） |
+| Secrets | `NOTIFY_WEBHOOK` | 可选，飞书/企微/Slack 机器人地址 |
+| Variables | `DEPLOY_TARGET` | `pages`（推荐）或 `rsync` |
+| Variables | `DEPLOY_PATH` | rsync 模式必填，如 `/var/www/workbench` |
+| Variables | `HEALTH_URL` | rsync 模式必填；pages 模式留空也能跑（工作流会自己拿地址） |
+| Variables | `SSH_PORT` | 可选，默认 22 |
+
+- 点 **Add secret / Add variable** 逐个添加；改完可再点编辑修改。
+- `production` 建议勾选 **Required reviewers**（生产发布前人工确认一次）。
+
+### 步骤 2 · Settings → Pages
+
+- **Build and deployment → Source** 选 **GitHub Actions**（不是 "Deploy from a branch"）。
+- 自定义域名：在 Custom domain 填域名 → 去 DNS 加一条 `CNAME` 指向 `<账号>.github.io` → 勾选 **Enforce HTTPS**。
+- 权限不用额外改：工作流已在 job 级别声明 `pages: write` + `id-token: write`（OIDC，不需要任何 token 型 Secret）。
+
+### 步骤 3 · Settings → Environments → 每个环境的保护规则
+
+- `staging` → **Deployment branches**：选 *Selected branches*，只允许 `develop`。
+- `production` → **Deployment branches**：选 *Selected branches*，只允许 `main`；并勾 **Required reviewers**。
+
+### 步骤 4 · Settings → Branches（分支保护）
+
+- `main`：勾 **Require a pull request before merging** + **Require status checks to pass**，勾选状态检查 `Lint / 类型检查 / 单元测试 (Node 20)`、`Lint / 类型检查 / 单元测试 (Node 22)`、`构建 + 冒烟`。
+- `develop`：同样勾 **Require status checks to pass**（可选但推荐）。
+
+### 步骤 5 · 首次验证顺序
+
+1. 推一个空提交到 `develop` → Actions 里 `Deploy Staging` 跑绿 → 看健康检查日志出现「通过」。
+2. 开 PR `develop → main` → `CI` 跑绿。
+3. 合并 PR → `Deploy Production` 自动跑 → 输出里给出线上地址。
+
+### Pages 模式的环境冲突（重要）
+
+一个仓库**只有一个 Pages 站点**。若 `staging` 与 `production` 同时设为 `DEPLOY_TARGET=pages`，
+预发部署会直接覆盖生产。因此本仓库把 **staging 默认设为 `rsync`、production 默认设为 `pages`**，
+staging 走 pages 必须显式配置，且要自己承担覆盖风险。
+
+另外：`actions/deploy-pages` 官方推荐把 job 环境命名为 `github-pages`；本仓库用的是 `production`
+（官方允许，只是不推荐）。如果之后 Pages 部署报环境相关错误，把 production.yml 里 deploy job 的
+`environment.name` 改成 `github-pages` 即可，其余不用动。
+
+## 七、本地等价命令
 
 ```bash
 npm run ci          # lint → typecheck → test → build → smoke，与 PR 门禁完全一致

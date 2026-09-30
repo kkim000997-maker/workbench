@@ -39,8 +39,10 @@ const external = html.match(/(?:src|href)\s*=\s*["']https?:\/\/[^"']+["']/g);
 if (external) fail(`检测到外部依赖，违反「全内联零外链」规范：${external.slice(0, 3).join(', ')}`);
 
 // --- 2. 按部署目标处理平台注入脚本 ---
+// 只有「回到资料库」这种目标才需要保留平台 SDK；pages / rsync 都跑在 WorkBuddy 之外，
+// 留着只会请求一个 404 的路径（页面已有降级分支，但没必要多一次失败请求）。
 let stripped = false;
-if (target === 'pages') {
+if (target !== 'workbuddy') {
   const before = html;
   html = html.replace(
     /\s*<script[^>]*src=["']\/page\/page_comm\/inject\.js["'][^>]*>\s*<\/script>/g,

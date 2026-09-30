@@ -131,7 +131,8 @@ jobs:
             dist/ "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${{ vars.DEPLOY_PATH }}/"
 
       - name: 部署后健康检查
-        if: ${{ !inputs.skip_healthcheck }}
+        # push 触发时没有 inputs 上下文，必须先判 event_name，否则表达式求值不稳
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.skip_healthcheck }}
         run: |
           url="${{ steps.deployment.outputs.page_url || vars.HEALTH_URL }}"
           if [ -z "$url" ]; then
