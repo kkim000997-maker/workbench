@@ -1,8 +1,10 @@
 name: CI
 
-# 质量门禁：只在 Pull Request（合入 main / develop 之前）和手动触发时运行。
+# 质量门禁：Pull Request（合入 main / develop 之前）、develop 推送、手动触发都会跑。
 # CI 不碰任何环境、不部署；部署由 staging.yml / production.yml 负责。
 on:
+  push:
+    branches: [develop]
   pull_request:
     branches: [main, develop]
   workflow_dispatch:
