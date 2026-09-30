@@ -8,12 +8,6 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      skip_healthcheck:
-        description: 跳过部署后健康检查（仅紧急修复时用）
-        required: false
-        default: false
-        type: boolean
 
 permissions:
   contents: read
@@ -130,9 +124,10 @@ jobs:
             -e "ssh -p ${{ vars.SSH_PORT || 22 }} -o StrictHostKeyChecking=yes" \
             dist/ "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${{ vars.DEPLOY_PATH }}/"
 
+      # 说明：if 里不要用 inputs.* / secrets.* 上下文（GitHub 在解析期就可能因上下文不可用判为无效工作流），
+      # 需要开关时用环境变量或 vars。
       - name: 部署后健康检查
-        # push 触发时没有 inputs 上下文，必须先判 event_name，否则表达式求值不稳
-        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.skip_healthcheck }}
+        if: always() && needs.build.result == 'success'
         run: |
           url="${{ steps.deployment.outputs.page_url || vars.HEALTH_URL }}"
           if [ -z "$url" ]; then
@@ -154,7 +149,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: 失败通知
-        if: failure() && secrets.NOTIFY_WEBHOOK != ''
+        if: failure() && vars.NOTIFY_ENABLED == 'true'
         run: |
           curl -sS -X POST -H 'Content-Type: application/json' \
             -d '{"text":"生产部署失败：版本 ${{ needs.build.outputs.version }}，请查看 ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}' \
