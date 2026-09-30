@@ -1,10 +1,11 @@
 name: CI
 
-# 质量门禁：Pull Request（合入 main / develop 之前）、develop 推送、手动触发都会跑。
-# CI 不碰任何环境、不部署；部署由 staging.yml / production.yml 负责。
+# 质量门禁：任何分支提交（main 除外）、PR、手动触发都会跑 lint → typecheck → test → build → smoke。
+# main 不在这里跑，是因为 production.yml 的 build job 已包含同一套门禁，避免重复消耗。
+# CI 不碰任何环境、不部署；部署只由 staging.yml / production.yml 负责。
 on:
   push:
-    branches: [develop]
+    branches-ignore: [main]
   pull_request:
     branches: [main, develop]
   workflow_dispatch:

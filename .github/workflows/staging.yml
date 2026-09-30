@@ -1,11 +1,14 @@
 name: Deploy Staging
 
-# develop 分支一旦有提交，自动部署到 staging 环境并做健康检查。
-# 部署目标由 GitHub Environment「staging」的变量 DEPLOY_TARGET 决定（pages / rsync），
-# 敏感信息全部走 Environment Secrets，不在仓库里明文出现。
+# ⚠️ 当前为「手动触发」：staging 的部署方式尚未确定（没有真实服务器信息，
+# SSH_HOST / SSH_USER / SSH_KEY / DEPLOY_PATH / HEALTH_URL 一律不虚构）。
+# 等这些配置落实后，把下面 push 的两行注释放开即可恢复「develop 提交自动部署」。
+#
+# 一个仓库只有一个 GitHub Pages 站点，staging 不能与 production 共用 Pages，
+# 因此这里的部署目标是 rsync + SSH（自建服务器/Nginx），不是 Pages。
 on:
-  push:
-    branches: [develop]
+  # push:
+  #   branches: [develop]
   workflow_dispatch:
 
 permissions:
