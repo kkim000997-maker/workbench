@@ -1,0 +1,19 @@
+{
+  "name": "personal-workbench",
+  "version": "1.0.0",
+  "private": true,
+  "description": "个人工作台 · 单文件 HTML 应用（零依赖，GitHub Actions 自动构建/测试/部署）",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "lint": "node scripts/lint.mjs",
+    "typecheck": "node scripts/typecheck.mjs",
+    "test": "node --test",
+    "build": "node scripts/build.mjs",
+    "smoke": "node scripts/smoke.mjs",
+    "healthcheck": "node scripts/healthcheck.mjs",
+    "ci": "npm run lint && npm run typecheck && npm test && npm run build && npm run smoke"
+  }
+}

@@ -1,0 +1,143 @@
+name: Deploy Staging
+
+# develop 分支一旦有提交，自动部署到 staging 环境并做健康检查。
+# 部署目标由 GitHub Environment「staging」的变量 DEPLOY_TARGET 决定（pages / rsync），
+# 敏感信息全部走 Environment Secrets，不在仓库里明文出现。
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: 构建 + 冒烟
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 计算版本号
+        id: meta
+        run: echo "version=$(echo '${{ github.sha }}' | cut -c1-7)" >> "$GITHUB_OUTPUT"
+
+      - name: Lint
+        run: npm run lint
+
+      - name: 类型检查
+        run: npm run typecheck
+
+      - name: 单元测试
+        run: npm test
+
+      - name: 构建
+        run: npm run build
+        env:
+          DEPLOY_TARGET: ${{ vars.DEPLOY_TARGET || 'pages' }}
+          BUILD_VERSION: ${{ steps.meta.outputs.version }}
+
+      - name: 冒烟测试
+        run: npm run smoke
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: workbench-dist
+          path: dist
+          retention-days: 7
+
+  deploy:
+    name: 部署到 staging
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: ${{ steps.deployment.outputs.page_url || vars.HEALTH_URL }}
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: workbench-dist
+          path: dist
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # 默认 rsync：一个仓库只有一个 Pages 站点，预发默认走 Pages 会直接覆盖生产
+      - name: 解析部署目标
+        id: mode
+        run: echo "target=${{ vars.DEPLOY_TARGET || 'rsync' }}" >> "$GITHUB_OUTPUT"
+
+      - name: 校验 rsync 配置完整性
+        if: steps.mode.outputs.target == 'rsync'
+        run: |
+          missing=""
+          [ -n "${{ secrets.SSH_HOST }}" ] || missing="$missing SSH_HOST"
+          [ -n "${{ secrets.SSH_USER }}" ] || missing="$missing SSH_USER"
+          [ -n "${{ secrets.SSH_KEY }}" ] || missing="$missing SSH_KEY"
+          [ -n "${{ vars.DEPLOY_PATH }}" ] || missing="$missing DEPLOY_PATH"
+          if [ -n "$missing" ]; then
+            echo "::error::staging 环境缺少配置：$missing —— 请到 Settings → Environments → staging 补齐"
+            exit 1
+          fi
+
+      - name: 部署（GitHub Pages）
+        if: steps.mode.outputs.target == 'pages'
+        uses: actions/configure-pages@v5
+
+      - name: 上传 Pages 产物
+        if: steps.mode.outputs.target == 'pages'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+      - name: 发布 Pages
+        if: steps.mode.outputs.target == 'pages'
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: 部署（rsync 到 staging 服务器）
+        if: steps.mode.outputs.target == 'rsync'
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s' "${{ secrets.SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H -p "${{ vars.SSH_PORT || 22 }}" "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
+          rsync -az --delete \
+            -e "ssh -p ${{ vars.SSH_PORT || 22 }} -o StrictHostKeyChecking=yes" \
+            dist/ "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${{ vars.DEPLOY_PATH }}/"
+
+      - name: 部署后健康检查
+        run: |
+          url="${{ steps.deployment.outputs.page_url || vars.HEALTH_URL }}"
+          if [ -z "$url" ]; then
+            echo "::error::未配置 HEALTH_URL，无法做健康检查（Pages 模式会自动给出地址）"
+            exit 1
+          fi
+          node scripts/healthcheck.mjs --url "$url" --expect "${{ needs.build.outputs.version }}" --tries 15 --interval 10
+
+      - name: 部署摘要
+        if: always()
+        run: |
+          {
+            echo "### Staging 部署结果"
+            echo "- 版本：\`${{ needs.build.outputs.version }}\`"
+            echo "- 目标：\`${{ steps.mode.outputs.target }}\`"
+            echo "- 地址：${{ steps.deployment.outputs.page_url || vars.HEALTH_URL }}"
+          } >> "$GITHUB_STEP_SUMMARY"

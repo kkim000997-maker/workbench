@@ -1,0 +1,160 @@
+name: Deploy Production
+
+# main 分支合并即发布生产。生产配置全部来自 GitHub Environment「production」：
+#   - Secrets：SSH_KEY / SSH_HOST / SSH_USER（rsync 模式）、可选 NOTIFY_WEBHOOK
+#   - Variables：DEPLOY_TARGET（pages / rsync）、DEPLOY_PATH、HEALTH_URL、SSH_PORT
+# 建议在 Environment 上开启 Required reviewers，让生产发布多一道人工确认。
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      skip_healthcheck:
+        description: 跳过部署后健康检查（仅紧急修复时用）
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: 构建 + 冒烟
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 计算版本号
+        id: meta
+        run: echo "version=$(echo '${{ github.sha }}' | cut -c1-7)" >> "$GITHUB_OUTPUT"
+
+      - name: Lint
+        run: npm run lint
+
+      - name: 类型检查
+        run: npm run typecheck
+
+      - name: 单元测试
+        run: npm test
+
+      - name: 构建
+        run: npm run build
+        env:
+          DEPLOY_TARGET: ${{ vars.DEPLOY_TARGET || 'pages' }}
+          BUILD_VERSION: ${{ steps.meta.outputs.version }}
+
+      - name: 冒烟测试
+        run: npm run smoke
+
+      # 生产产物留 30 天：出问题时直接从这次运行下载 dist 回滚，不用重新构建
+      - uses: actions/upload-artifact@v4
+        with:
+          name: workbench-dist-${{ steps.meta.outputs.version }}
+          path: dist
+          retention-days: 30
+
+  deploy:
+    name: 部署到 production
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: ${{ steps.deployment.outputs.page_url || vars.HEALTH_URL }}
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: workbench-dist-${{ needs.build.outputs.version }}
+          path: dist
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 解析部署目标
+        id: mode
+        run: echo "target=${{ vars.DEPLOY_TARGET || 'pages' }}" >> "$GITHUB_OUTPUT"
+
+      - name: 校验 rsync 配置完整性
+        if: steps.mode.outputs.target == 'rsync'
+        run: |
+          missing=""
+          [ -n "${{ secrets.SSH_HOST }}" ] || missing="$missing SSH_HOST"
+          [ -n "${{ secrets.SSH_USER }}" ] || missing="$missing SSH_USER"
+          [ -n "${{ secrets.SSH_KEY }}" ] || missing="$missing SSH_KEY"
+          [ -n "${{ vars.DEPLOY_PATH }}" ] || missing="$missing DEPLOY_PATH"
+          if [ -n "$missing" ]; then
+            echo "::error::production 环境缺少配置：$missing —— 请到 Settings → Environments → production 补齐"
+            exit 1
+          fi
+
+      - name: 部署（GitHub Pages）
+        if: steps.mode.outputs.target == 'pages'
+        uses: actions/configure-pages@v5
+
+      - name: 上传 Pages 产物
+        if: steps.mode.outputs.target == 'pages'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+      - name: 发布 Pages
+        if: steps.mode.outputs.target == 'pages'
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: 部署（rsync 到生产服务器）
+        if: steps.mode.outputs.target == 'rsync'
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s' "${{ secrets.SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H -p "${{ vars.SSH_PORT || 22 }}" "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
+          rsync -az --delete \
+            -e "ssh -p ${{ vars.SSH_PORT || 22 }} -o StrictHostKeyChecking=yes" \
+            dist/ "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${{ vars.DEPLOY_PATH }}/"
+
+      - name: 部署后健康检查
+        if: ${{ !inputs.skip_healthcheck }}
+        run: |
+          url="${{ steps.deployment.outputs.page_url || vars.HEALTH_URL }}"
+          if [ -z "$url" ]; then
+            echo "::error::未配置 HEALTH_URL，无法做健康检查（Pages 模式会自动给出地址）"
+            exit 1
+          fi
+          node scripts/healthcheck.mjs --url "$url" --expect "${{ needs.build.outputs.version }}" --tries 20 --interval 15
+
+      - name: 发布摘要与回滚指引
+        if: always()
+        run: |
+          {
+            echo "### 生产发布 \`${{ needs.build.outputs.version }}\`"
+            echo "- 目标：\`${{ steps.mode.outputs.target }}\` · 地址：${{ steps.deployment.outputs.page_url || vars.HEALTH_URL }}"
+            echo "- 提交：\`${{ github.sha }}\` · 触发人：${{ github.actor }}"
+            echo ""
+            echo "回滚：到本次运行页面下载 \`workbench-dist-${{ needs.build.outputs.version }}\`，"
+            echo "或用上一版本重新跑本工作流（选择对应 commit 的 workflow_dispatch）。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 失败通知
+        if: failure() && secrets.NOTIFY_WEBHOOK != ''
+        run: |
+          curl -sS -X POST -H 'Content-Type: application/json' \
+            -d '{"text":"生产部署失败：版本 ${{ needs.build.outputs.version }}，请查看 ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}' \
+            "${{ secrets.NOTIFY_WEBHOOK }}"
